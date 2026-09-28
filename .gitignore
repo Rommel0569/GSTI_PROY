@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Datos y modelos generados por el pipeline (recreables con el one-command setup)
+data/raw/*
+data/processed/*
+models/*.joblib
+!data/raw/.gitkeep
+!data/processed/.gitkeep

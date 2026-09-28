@@ -1,0 +1,28 @@
+# Núcleo de datos y ML (100% open-source / free)
+pandas>=2.2
+numpy>=1.26
+scikit-learn>=1.4
+xgboost>=2.0
+imbalanced-learn>=0.12
+shap>=0.45
+joblib>=1.3
+
+# Backend / API
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6
+
+# Frontend
+streamlit>=1.32
+plotly>=5.20
+
+# Ingesta de datos (Nivel 2 y 3 de data_pipeline.py)
+requests>=2.31
+tqdm>=4.66
+kaggle>=1.6
+
+# Notificaciones (opcional - solo si MOCK_NOTIFICATIONS=False)
+twilio>=8.10
+
+# Pruebas
+pytest>=8.0

@@ -9,6 +9,7 @@ tal como exige el setup de un solo comando (Sección 4 de la directriz).
 """
 from __future__ import annotations
 
+import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -19,6 +20,12 @@ import streamlit as st
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 from src import database, decision_engine, notification_service, train  # noqa: E402
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:  # pragma: no cover
+    pass
 
 st.set_page_config(
     page_title="Sistema Predictivo de No-Show Médico",
@@ -155,6 +162,36 @@ with database.connect() as _conn:
     database.init_db(_conn)
 
 # ==========================================================================
+# Control de acceso (RNF-02) — obligatorio antes de exponer el dashboard
+# fuera de localhost. Si DASHBOARD_PASSWORD no está configurada, el sistema
+# queda en modo desarrollo (sin candado) y lo advierte visiblemente.
+# ==========================================================================
+_DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
+
+if _DASHBOARD_PASSWORD and not st.session_state.get("autenticado"):
+    st.markdown(
+        f"""
+        <div class="inst-header">
+            <div>
+                <p class="inst-title">Sistema Predictivo de Inasistencia a Citas Médicas</p>
+                <p class="inst-subtitle">Acceso restringido — personal administrativo autorizado</p>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    with st.form("form_login"):
+        password_input = st.text_input("Contraseña", type="password")
+        login_submitted = st.form_submit_button("Ingresar", type="primary")
+    if login_submitted:
+        if password_input == _DASHBOARD_PASSWORD:
+            st.session_state["autenticado"] = True
+            st.rerun()
+        else:
+            st.error("Contraseña incorrecta.")
+    st.stop()
+
+# ==========================================================================
 # Encabezado institucional
 # ==========================================================================
 model_ok = _model_ready()
@@ -180,6 +217,11 @@ with st.sidebar:
     st.markdown(
         dot_label(STATUS_COLORS["BAJO"] if model_ok else STATUS_COLORS["ALTO"],
                   "Modelo entrenado" if model_ok else "Modelo no entrenado"),
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        dot_label(STATUS_COLORS["MEDIO"] if not _DASHBOARD_PASSWORD else STATUS_COLORS["BAJO"],
+                  "Acceso: sin contraseña (desarrollo)" if not _DASHBOARD_PASSWORD else "Acceso: protegido"),
         unsafe_allow_html=True,
     )
     st.markdown(
@@ -491,7 +533,7 @@ with tab2:
                     st.rerun()
             with ac2:
                 if st.button("Llamar (IVR / simulación)", key=f"call_{selected_id}", width="stretch"):
-                    notification_service.make_call(selected_row["external_patient_id"])
+                    notification_service.make_call(selected_row["external_patient_id"], appointment_id=selected_id)
                     with database.connect() as conn:
                         decision_engine.register_contact_outcome(
                             conn, selected_id, "LLAMADA_TELEFONICA", "SIN_RESPUESTA"

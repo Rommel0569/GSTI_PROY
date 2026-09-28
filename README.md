@@ -108,3 +108,56 @@ Por defecto `MOCK_NOTIFICATIONS=true`: todo SMS/WhatsApp/llamada se imprime en
 consola y se registra en la auditoría sin costo. Para usar Twilio real,
 configure las variables de entorno `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`,
 `TWILIO_FROM_NUMBER` y fije `MOCK_NOTIFICATIONS=false`.
+
+## Puesta en producción / entrega a un hospital
+
+El código está listo para producción (autenticación, automatización sin
+clics manuales, contenedores, validación de firma de Twilio). Lo que **no**
+se puede resolver desde el código, porque depende de la identidad y los
+pagos del hospital, son estos pasos manuales:
+
+1. **Cuenta Twilio real** — crear una cuenta en [twilio.com](https://www.twilio.com),
+   comprar un número con capacidad de voz/SMS, y copiar `Account SID` /
+   `Auth Token` al archivo `.env` (basado en `.env.example`).
+2. **WhatsApp Business aprobado por Meta** — el sandbox de Twilio sirve solo
+   para pruebas; para enviar recordatorios reales a cualquier paciente, Meta
+   exige verificar el negocio y aprobar una plantilla de mensaje. Esto aplica
+   sin importar el proveedor (Twilio, la API oficial de Meta, o cualquier
+   revendedor como NeuroChat u otros BSP de WhatsApp): la aprobación es de
+   Meta, no del proveedor. El sistema soporta dos rutas, elegibles con
+   `WHATSAPP_PROVIDER` en `.env`:
+   - `twilio` (por defecto): el SID de la plantilla va en `TWILIO_WHATSAPP_CONTENT_SID`.
+   - `meta_cloud`: usa la API oficial de Meta directamente (sin margen de
+     intermediario por mensaje), con `META_WHATSAPP_TOKEN`,
+     `META_WHATSAPP_PHONE_NUMBER_ID` y `META_WHATSAPP_TEMPLATE_NAME`.
+   Si el hospital ya tiene cuenta con otro proveedor (por ejemplo NeuroChat)
+   y su documentación técnica de API, se puede agregar como una tercera rama
+   en `src/notification_service.py` siguiendo el mismo patrón — pero requiere
+   esa documentación real; no se integra a ciegas un servicio sin API pública
+   verificable.
+3. **Hosting con HTTPS público** — Twilio necesita poder llamar de vuelta al
+   webhook `/api/v1/webhook/twilio-dtmf` durante una llamada real, lo que
+   requiere una URL pública con TLS (no `localhost`). Despliegue
+   `docker-compose.yml` en un servidor/VM del hospital o en un proveedor
+   cloud, y ponga esa URL en `PUBLIC_BASE_URL`.
+4. **Secretos de producción** — genere `API_KEY` (protege `app/api.py`) y
+   `DASHBOARD_PASSWORD` (protege `app/main_dashboard.py`) con valores
+   aleatorios reales; sin ellos, el sistema queda abierto y lo advierte en
+   `/` y en la barra lateral del dashboard.
+5. **Autorización institucional y legal** — acceso al sistema HIS del
+   hospital para reemplazar el dataset sintético por pacientes reales, y
+   cumplimiento de la normativa peruana de protección de datos personales
+   (los datos de salud son datos sensibles).
+
+### Ejecutar con Docker (recomendado para entrega)
+
+```bash
+cp .env.example .env      # completar credenciales reales
+docker compose up --build
+```
+
+Esto levanta tres servicios: `api` (puerto 8000), `dashboard` (puerto 8501)
+y `scheduler` (proceso en segundo plano, sin puerto), compartiendo la misma
+base de datos vía volumen. El `scheduler` es lo que hace que el sistema
+contacte pacientes y reasigne cupos **solo**, sin que un operador presione
+botones — es la pieza que falta para llamarlo "automatizado" de verdad.

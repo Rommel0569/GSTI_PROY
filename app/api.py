@@ -6,17 +6,40 @@ Documentación interactiva (Swagger UI): http://127.0.0.1:8000/docs
 """
 from __future__ import annotations
 
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, Security
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 from src import database, decision_engine, notification_service, train  # noqa: E402
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:  # pragma: no cover
+    pass
+
+API_KEY = os.getenv("API_KEY", "")
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def require_api_key(key: str | None = Security(_api_key_header)) -> None:
+    """RNF-02: protege todos los endpoints operativos con una clave compartida.
+    Si el hospital no configuró API_KEY (entorno de desarrollo local), el
+    endpoint queda abierto y se advierte en /  — pero en producción es
+    obligatorio fijar API_KEY en el .env antes de exponer el servicio."""
+    if not API_KEY:
+        return  # modo desarrollo: sin clave configurada, no se exige
+    if key != API_KEY:
+        raise HTTPException(401, "API key inválida o ausente (header X-API-Key)")
+
 
 app = FastAPI(
     title="Sistema Predictivo de No-Show Médico",
@@ -82,7 +105,8 @@ class ReassignRequest(BaseModel):
 # RF-02/RF-03/RF-04
 # --------------------------------------------------------------------------
 
-@app.post("/api/v1/predict-risk", response_model=PredictRiskResponse)
+@app.post("/api/v1/predict-risk", response_model=PredictRiskResponse,
+          dependencies=[Depends(require_api_key)])
 def predict_risk(req: PredictRiskRequest):
     if not train.artifacts_available():
         raise HTTPException(503, "Modelo no entrenado. Ejecute 'python src/train.py' primero.")
@@ -102,7 +126,7 @@ def predict_risk(req: PredictRiskRequest):
 # RF-05
 # --------------------------------------------------------------------------
 
-@app.post("/api/v1/recommend-intervention")
+@app.post("/api/v1/recommend-intervention", dependencies=[Depends(require_api_key)])
 def recommend_intervention(req: RecommendInterventionRequest):
     return decision_engine.recommend_intervention(
         req.risk_level, req.contact_channel_available, req.has_chronic_condition
@@ -113,7 +137,7 @@ def recommend_intervention(req: RecommendInterventionRequest):
 # RF-06
 # --------------------------------------------------------------------------
 
-@app.post("/api/v1/audit/log-contact")
+@app.post("/api/v1/audit/log-contact", dependencies=[Depends(require_api_key)])
 def log_contact(req: LogContactRequest):
     with database.connect() as conn:
         try:
@@ -128,7 +152,7 @@ def log_contact(req: LogContactRequest):
 # RF-07/RF-08
 # --------------------------------------------------------------------------
 
-@app.post("/api/v1/slots/reassign")
+@app.post("/api/v1/slots/reassign", dependencies=[Depends(require_api_key)])
 def reassign_slots(req: ReassignRequest):
     with database.connect() as conn:
         if req.appointment_id is not None:
@@ -142,7 +166,7 @@ def reassign_slots(req: ReassignRequest):
 # RF-10
 # --------------------------------------------------------------------------
 
-@app.get("/api/v1/metrics/kpis")
+@app.get("/api/v1/metrics/kpis", dependencies=[Depends(require_api_key)])
 def get_kpis():
     with database.connect() as conn:
         return decision_engine.compute_kpis(conn)
@@ -153,22 +177,38 @@ def get_kpis():
 # --------------------------------------------------------------------------
 
 @app.post("/api/v1/webhook/twilio-dtmf")
-def twilio_dtmf_webhook(appointment_id: int, Digits: str = ""):
+async def twilio_dtmf_webhook(request: Request, appointment_id: int, Digits: str = ""):
+    """Invocado por Twilio (no por el hospital), por eso no usa X-API-Key:
+    en su lugar se valida la firma criptográfica X-Twilio-Signature, que
+    prueba que la petición realmente proviene de Twilio (RNF-02)."""
+    signature = request.headers.get("X-Twilio-Signature", "")
+    form = await request.form()
+    if not notification_service.validate_twilio_signature(str(request.url), dict(form), signature):
+        raise HTTPException(403, "Firma de Twilio inválida")
+
     outcome = notification_service.process_twilio_dtmf_webhook(Digits)
     with database.connect() as conn:
-        database.insert_contact_audit(
-            conn, appointment_id=appointment_id, channel_used="LLAMADA_TELEFONICA",
-            outcome=outcome,
-        )
-    return Response(content="<Response><Say>Gracias.</Say></Response>",
+        try:
+            decision_engine.register_contact_outcome(
+                conn, appointment_id, "LLAMADA_TELEFONICA", outcome
+            )
+        except ValueError:
+            pass  # cita no encontrada: se ignora, Twilio no debe recibir un error 5xx
+    return Response(content="<Response><Say language=\"es-MX\">Gracias.</Say></Response>",
                      media_type="application/xml")
 
 
 @app.get("/")
 def root():
+    warnings = []
+    if not API_KEY:
+        warnings.append("API_KEY no configurada: los endpoints están abiertos sin autenticación.")
+    if notification_service.MOCK_NOTIFICATIONS:
+        warnings.append("MOCK_NOTIFICATIONS=true: las notificaciones se simulan, no se envían de verdad.")
     return {
         "sistema": "Sistema Predictivo de No-Show Médico",
         "docs": "/docs",
         "modelo_entrenado": train.artifacts_available(),
         "timestamp": datetime.now().isoformat(),
+        "advertencias_produccion": warnings,
     }

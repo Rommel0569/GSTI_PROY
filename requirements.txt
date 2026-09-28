@@ -24,5 +24,9 @@ kaggle>=1.6
 # Notificaciones (opcional - solo si MOCK_NOTIFICATIONS=False)
 twilio>=8.10
 
+# Automatización y configuración de producción
+APScheduler>=3.10
+python-dotenv>=1.0
+
 # Pruebas
 pytest>=8.0
